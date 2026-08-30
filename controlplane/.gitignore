@@ -1,0 +1,5 @@
+.env
+cache/store/
+__pycache__/
+*.pyc
+.pytest_cache/
