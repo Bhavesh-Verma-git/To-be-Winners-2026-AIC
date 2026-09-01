@@ -22,6 +22,7 @@ neo4j>=5.14            # optional at runtime (graph_triples.json fallback if abs
 xgboost>=2.0
 spacy>=3.7
 transformers>=4.40
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.2
 nltk>=3.8
 datasets>=2.18         # imported by the reused feature_engineering module
@@ -36,4 +37,4 @@ pandas>=2.0
 numpy>=1.24
 pdfplumber>=0.10       # only for optional index rebuilds
 
-# After install:  python -m spacy download en_core_web_sm
+https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
