@@ -1,0 +1,163 @@
+<html>
+    <head>
+        <meta charset="utf-8">
+        
+            <script src="lib/bindings/utils.js"></script>
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/dist/vis-network.min.css" integrity="sha512-WgxfT5LWjfszlPHXRmBWHkV2eceiWTOBvrKCNbdgDYTHrT2AeLCGbF4sZlZw3UMN3WtL0tGUoIAKsu8mllg/XA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/vis-network.min.js" integrity="sha512-LnvoEWDFrqGHlHmDD2101OrLcbsfkrzoSpvtSQtxK3RMnRV0eOkhhBN2dXHKRrUU8p2DGRTk35n4O8nWSVe1mQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+            
+        
+<center>
+<h1></h1>
+</center>
+
+<!-- <link rel="stylesheet" href="../node_modules/vis/dist/vis.min.css" type="text/css" />
+<script type="text/javascript" src="../node_modules/vis/dist/vis.js"> </script>-->
+        <link
+          href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/css/bootstrap.min.css"
+          rel="stylesheet"
+          integrity="sha384-eOJMYsd53ii+scO/bJGFsiCZc+5NDVN2yr8+0RDqr0Ql0h+rP48ckxlpbzKgwra6"
+          crossorigin="anonymous"
+        />
+        <script
+          src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/js/bootstrap.bundle.min.js"
+          integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf"
+          crossorigin="anonymous"
+        ></script>
+
+
+        <center>
+          <h1></h1>
+        </center>
+        <style type="text/css">
+
+             #mynetwork {
+                 width: 100%;
+                 height: 450px;
+                 background-color: #111827;
+                 border: 1px solid lightgray;
+                 position: relative;
+                 float: left;
+             }
+
+             
+
+             
+
+             
+        </style>
+    </head>
+
+
+    <body>
+        <div class="card" style="width: 100%">
+            
+            
+            <div id="mynetwork" class="card-body"></div>
+        </div>
+
+        
+        
+
+        <script type="text/javascript">
+
+              // initialize global variables.
+              var edges;
+              var nodes;
+              var allNodes;
+              var allEdges;
+              var nodeColors;
+              var originalNodes;
+              var network;
+              var container;
+              var options, data;
+              var filter = {
+                  item : '',
+                  property : '',
+                  value : []
+              };
+
+              
+
+              
+
+              // This method is responsible for drawing the graph, returns the drawn network
+              function drawGraph() {
+                  var container = document.getElementById('mynetwork');
+
+                  
+
+                  // parsing and collecting nodes and edges from the python
+                  nodes = new vis.DataSet([{"color": "#3b82f6", "font": {"color": "#e5e7eb"}, "id": "NIST Trustworthiness: Accountable and Transparent", "label": "NIST Trustworthiness: Acc", "shape": "dot", "size": 22, "title": "Law: NIST Trustworthiness: Accountable and Transparent"}, {"color": "#10b981", "font": {"color": "#e5e7eb"}, "id": "nist_s046_c002_a877f466", "label": "Chunk: nist_s046_c0", "shape": "dot", "size": 16, "title": "Chunk ID: nist_s046_c002_a877f466\nh1: Part 1: AI Risks and Trustworthiness -\u003e h2: Trustworthiness: Accountable and Transparent"}, {"color": "#3b82f6", "font": {"color": "#e5e7eb"}, "id": "Appendix B: AI Risks vs Traditional Software Risks", "label": "Appendix B: AI Risks vs T", "shape": "dot", "size": 22, "title": "Law: Appendix B: AI Risks vs Traditional Software Risks"}, {"color": "#10b981", "font": {"color": "#e5e7eb"}, "id": "nist_s186_c003_3d76ad40", "label": "Chunk: nist_s186_c0", "shape": "dot", "size": 16, "title": "Chunk ID: nist_s186_c003_3d76ad40\nh1: Appendix B: AI Risks vs Traditional Software Risks -\u003e h2: Overview"}, {"color": "#10b981", "font": {"color": "#e5e7eb"}, "id": "nist_s046_c000_8cffbf90", "label": "Chunk: nist_s046_c0", "shape": "dot", "size": 16, "title": "Chunk ID: nist_s046_c000_8cffbf90\nh1: Part 1: AI Risks and Trustworthiness -\u003e h2: Trustworthiness: Accountable and Transparent"}, {"color": "#8b5cf6", "font": {"color": "#e5e7eb"}, "id": "General Overview", "label": "General Overview", "shape": "dot", "size": 14}, {"color": "#ec4899", "font": {"color": "#e5e7eb"}, "id": "Risk Management", "label": "Risk Management", "shape": "dot", "size": 14}, {"color": "#ec4899", "font": {"color": "#e5e7eb"}, "id": "NIST Core Function", "label": "NIST Core Function", "shape": "dot", "size": 14}, {"color": "#8b5cf6", "font": {"color": "#e5e7eb"}, "id": "NIST AI RMF 1.0", "label": "NIST AI RMF 1.0", "shape": "dot", "size": 14}, {"color": "#8b5cf6", "font": {"color": "#e5e7eb"}, "id": "Executive Summary", "label": "Executive Summary", "shape": "dot", "size": 14}, {"color": "#ec4899", "font": {"color": "#e5e7eb"}, "id": "Overview", "label": "Overview", "shape": "dot", "size": 14}, {"color": "#8b5cf6", "font": {"color": "#e5e7eb"}, "id": "Part 1: Foundational Info", "label": "Part 1: Foundational Info", "shape": "dot", "size": 14}, {"color": "#8b5cf6", "font": {"color": "#e5e7eb"}, "id": "Part 1: Framing Risk", "label": "Part 1: Framing Risk", "shape": "dot", "size": 14}, {"color": "#ec4899", "font": {"color": "#e5e7eb"}, "id": "Understanding and Address", "label": "Understanding and Address", "shape": "dot", "size": 14}, {"color": "#8b5cf6", "font": {"color": "#e5e7eb"}, "id": "NIST Challenges for AI Ri", "label": "NIST Challenges for AI Ri", "shape": "dot", "size": 14}, {"color": "#ec4899", "font": {"color": "#e5e7eb"}, "id": "Challenges for AI Risk Ma", "label": "Challenges for AI Risk Ma", "shape": "dot", "size": 14}, {"color": "#8b5cf6", "font": {"color": "#e5e7eb"}, "id": "Part 1: Audience", "label": "Part 1: Audience", "shape": "dot", "size": 14}, {"color": "#8b5cf6", "font": {"color": "#e5e7eb"}, "id": "Part 1: AI Risks and Trus", "label": "Part 1: AI Risks and Trus", "shape": "dot", "size": 14}, {"color": "#8b5cf6", "font": {"color": "#e5e7eb"}, "id": "NIST Trustworthiness: Val", "label": "NIST Trustworthiness: Val", "shape": "dot", "size": 14}, {"color": "#ec4899", "font": {"color": "#e5e7eb"}, "id": "Trustworthiness Character", "label": "Trustworthiness Character", "shape": "dot", "size": 14}, {"color": "#ec4899", "font": {"color": "#e5e7eb"}, "id": "Trustworthiness: Valid an", "label": "Trustworthiness: Valid an", "shape": "dot", "size": 14}, {"color": "#8b5cf6", "font": {"color": "#e5e7eb"}, "id": "NIST Trustworthiness: Saf", "label": "NIST Trustworthiness: Saf", "shape": "dot", "size": 14}, {"color": "#ec4899", "font": {"color": "#e5e7eb"}, "id": "Trustworthiness: Safe", "label": "Trustworthiness: Safe", "shape": "dot", "size": 14}, {"color": "#8b5cf6", "font": {"color": "#e5e7eb"}, "id": "NIST Trustworthiness: Sec", "label": "NIST Trustworthiness: Sec", "shape": "dot", "size": 14}, {"color": "#ec4899", "font": {"color": "#e5e7eb"}, "id": "Trustworthiness: Secure a", "label": "Trustworthiness: Secure a", "shape": "dot", "size": 14}, {"color": "#8b5cf6", "font": {"color": "#e5e7eb"}, "id": "NIST Trustworthiness: Acc", "label": "NIST Trustworthiness: Acc", "shape": "dot", "size": 14}, {"color": "#ec4899", "font": {"color": "#e5e7eb"}, "id": "Trustworthiness: Accounta", "label": "Trustworthiness: Accounta", "shape": "dot", "size": 14}, {"color": "#8b5cf6", "font": {"color": "#e5e7eb"}, "id": "NIST Trustworthiness: Exp", "label": "NIST Trustworthiness: Exp", "shape": "dot", "size": 14}, {"color": "#ec4899", "font": {"color": "#e5e7eb"}, "id": "Trustworthiness: Explaina", "label": "Trustworthiness: Explaina", "shape": "dot", "size": 14}, {"color": "#8b5cf6", "font": {"color": "#e5e7eb"}, "id": "NIST Trustworthiness: Pri", "label": "NIST Trustworthiness: Pri", "shape": "dot", "size": 14}]);
+                  edges = new vis.DataSet([{"color": "#6b7280", "from": "NIST Trustworthiness: Accountable and Transparent", "label": "CONTAINS_CHUNK", "to": "nist_s046_c002_a877f466"}, {"color": "#6b7280", "from": "Appendix B: AI Risks vs Traditional Software Risks", "label": "CONTAINS_CHUNK", "to": "nist_s186_c003_3d76ad40"}, {"color": "#6b7280", "from": "NIST Trustworthiness: Accountable and Transparent", "label": "CONTAINS_CHUNK", "to": "nist_s046_c000_8cffbf90"}, {"color": "#4b5563", "from": "General Overview", "label": "GOVERNS_OR_DEFINES", "to": "Risk Management"}, {"color": "#4b5563", "from": "General Overview", "label": "GOVERNS_OR_DEFINES", "to": "NIST Core Function"}, {"color": "#4b5563", "from": "NIST AI RMF 1.0", "label": "CONTAINS_SECTION", "to": "General Overview"}, {"color": "#4b5563", "from": "Executive Summary", "label": "CONTAINS_SECTION", "to": "Overview"}, {"color": "#4b5563", "from": "Part 1: Foundational Info", "label": "CONTAINS_SECTION", "to": "Overview"}, {"color": "#4b5563", "from": "Part 1: Framing Risk", "label": "CONTAINS_SECTION", "to": "Overview"}, {"color": "#4b5563", "from": "Part 1: Framing Risk", "label": "CONTAINS_SECTION", "to": "Understanding and Address"}, {"color": "#4b5563", "from": "NIST Challenges for AI Ri", "label": "GOVERNS_OR_DEFINES", "to": "Risk Management"}, {"color": "#4b5563", "from": "NIST Challenges for AI Ri", "label": "GOVERNS_OR_DEFINES", "to": "NIST Core Function"}, {"color": "#4b5563", "from": "Part 1: Framing Risk", "label": "CONTAINS_SECTION", "to": "Challenges for AI Risk Ma"}, {"color": "#4b5563", "from": "Part 1: Audience", "label": "CONTAINS_SECTION", "to": "Overview"}, {"color": "#4b5563", "from": "Part 1: AI Risks and Trus", "label": "CONTAINS_SECTION", "to": "Overview"}, {"color": "#4b5563", "from": "NIST Trustworthiness: Val", "label": "GOVERNS_OR_DEFINES", "to": "Trustworthiness Character"}, {"color": "#4b5563", "from": "Part 1: AI Risks and Trus", "label": "CONTAINS_SECTION", "to": "Trustworthiness: Valid an"}, {"color": "#4b5563", "from": "NIST Trustworthiness: Saf", "label": "GOVERNS_OR_DEFINES", "to": "Trustworthiness Character"}, {"color": "#4b5563", "from": "Part 1: AI Risks and Trus", "label": "CONTAINS_SECTION", "to": "Trustworthiness: Safe"}, {"color": "#4b5563", "from": "NIST Trustworthiness: Sec", "label": "GOVERNS_OR_DEFINES", "to": "Trustworthiness Character"}, {"color": "#4b5563", "from": "Part 1: AI Risks and Trus", "label": "CONTAINS_SECTION", "to": "Trustworthiness: Secure a"}, {"color": "#4b5563", "from": "NIST Trustworthiness: Acc", "label": "GOVERNS_OR_DEFINES", "to": "Trustworthiness Character"}, {"color": "#4b5563", "from": "Part 1: AI Risks and Trus", "label": "CONTAINS_SECTION", "to": "Trustworthiness: Accounta"}, {"color": "#4b5563", "from": "NIST Trustworthiness: Exp", "label": "GOVERNS_OR_DEFINES", "to": "Trustworthiness Character"}, {"color": "#4b5563", "from": "Part 1: AI Risks and Trus", "label": "CONTAINS_SECTION", "to": "Trustworthiness: Explaina"}, {"color": "#4b5563", "from": "NIST Trustworthiness: Pri", "label": "GOVERNS_OR_DEFINES", "to": "Trustworthiness Character"}]);
+
+                  nodeColors = {};
+                  allNodes = nodes.get({ returnType: "Object" });
+                  for (nodeId in allNodes) {
+                    nodeColors[nodeId] = allNodes[nodeId].color;
+                  }
+                  allEdges = edges.get({ returnType: "Object" });
+                  // adding nodes and edges to the graph
+                  data = {nodes: nodes, edges: edges};
+
+                  var options = {
+    "configure": {
+        "enabled": false
+    },
+    "edges": {
+        "color": {
+            "inherit": true
+        },
+        "smooth": {
+            "enabled": true,
+            "type": "dynamic"
+        }
+    },
+    "interaction": {
+        "dragNodes": true,
+        "hideEdgesOnDrag": false,
+        "hideNodesOnDrag": false
+    },
+    "physics": {
+        "barnesHut": {
+            "avoidOverlap": 0,
+            "centralGravity": 0.3,
+            "damping": 0.09,
+            "gravitationalConstant": -3000,
+            "springConstant": 0.001,
+            "springLength": 120
+        },
+        "enabled": true,
+        "stabilization": {
+            "enabled": true,
+            "fit": true,
+            "iterations": 1000,
+            "onlyDynamicEdges": false,
+            "updateInterval": 50
+        }
+    }
+};
+
+                  
+
+
+                  
+
+                  network = new vis.Network(container, data, options);
+
+                  
+
+                  
+
+                  
+
+
+                  
+
+                  return network;
+
+              }
+              drawGraph();
+        </script>
+    </body>
+</html>
