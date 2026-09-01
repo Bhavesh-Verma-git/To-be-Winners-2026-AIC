@@ -1,4 +1,5 @@
 .env
+.env.bak
 cache/store/
 __pycache__/
 *.pyc
