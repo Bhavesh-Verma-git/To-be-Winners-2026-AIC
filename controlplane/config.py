@@ -122,6 +122,17 @@ def _split_keys(*names: str, prefix: Optional[str] = None) -> List[str]:
     return seen
 
 
+def _gemini_keys() -> List[str]:
+    """Google AI Studio API keys look like `AIza...`. OAuth access tokens
+    (`AQ.` / `ya29.`) are NOT accepted by LiteLLM's `gemini/` provider - they
+    fail every call with a 401 `ACCESS_TOKEN_TYPE_UNSUPPORTED`, which just adds
+    latency. Drop them unless CP_GEMINI_ALLOW_ANY=1 forces them back in."""
+    keys = _split_keys("GEMINI_API_KEYS", "GOOGLE_API_KEY", "GEMINI_API_KEY")
+    if os.getenv("CP_GEMINI_ALLOW_ANY", "").strip().lower() in {"1", "true", "yes"}:
+        return keys
+    return [k for k in keys if k.startswith("AIza")]
+
+
 def _flag(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -165,7 +176,7 @@ _GEM_FLASH = "gemini/gemini-2.5-flash"
 
 def _cat(*models: str) -> List[str]:
     out = list(models)
-    if _split_keys("GEMINI_API_KEYS", "GOOGLE_API_KEY", "GEMINI_API_KEY"):
+    if _gemini_keys():          # only add the Gemini fallback when a USABLE key exists
         out.append(_GEM_FLASH)
     return out
 
@@ -199,7 +210,9 @@ _DEFAULT_KB_MODEL: Dict[str, str] = {
     "hr_policy": "medium",
     "internal_knowledge": "medium",
     "toxicity_kb": "medium",
-    "decision_support": "heavy",   # multi-turn meeting reasoning; override to 'medium' for speed
+    # meeting reasoning still uses gpt-oss-120b (medium's primary) but drops the
+    # slow compound-beta / qwen reasoning fallbacks that pushed latency past 10s.
+    "decision_support": "medium",   # set CP_KB_MODEL_DECISION_SUPPORT=heavy to restore
 }
 
 
@@ -216,9 +229,7 @@ class Settings:
     groq_keys: List[str] = field(
         default_factory=lambda: _split_keys("GROQ_API_KEYS", "GROQ_API_KEY", prefix="gsk_")
     )
-    gemini_keys: List[str] = field(
-        default_factory=lambda: _split_keys("GEMINI_API_KEYS", "GOOGLE_API_KEY", "GEMINI_API_KEY")
-    )
+    gemini_keys: List[str] = field(default_factory=_gemini_keys)
 
     # ---- LiteLLM catalog ----------------------------------------------------------
     model_catalog: Dict[str, List[str]] = field(default_factory=_resolve_catalog)
@@ -363,11 +374,14 @@ KB_DESCRIPTIONS = {
         "diagnostics, staging slots."
     ),
     "toxicity_kb": (
-        "Content-safety / hate-speech ANALYSIS. Use this for ANY request to analyse, classify, "
-        "rate, or explain whether a statement or phrase is toxic, hateful, offensive, "
-        "discriminatory, a stereotype, dehumanising, or hate speech - including 'is calling X ...', "
-        "'what target group / framing does ... fall under', 'is this statement toxic'. Backed by an "
-        "annotated corpus (target group, framing, stereotyping, factual, lewd labels)."
+        "Content-safety / hate-speech knowledge base. Contains a large annotated corpus of "
+        "real toxic, hateful, offensive, discriminatory and stereotyping statements, jokes and "
+        "opinions targeting demographic groups (race, ethnicity, nationality, religion, gender, "
+        "sexual orientation, disability, age). Use this for ANY query about toxic / hateful / "
+        "offensive / stereotypical / discriminatory views, jokes, slurs or statements about or "
+        "targeting a group, questions asking what such views/stereotypes are, and requests to "
+        "analyse, classify, rate or explain whether a statement is toxic or hate speech "
+        "(target group, framing, stereotyping, factual, lewd labels)."
     ),
     "decision_support": (
         "Transcripts of corporate product-design meetings (remote-control product): team "

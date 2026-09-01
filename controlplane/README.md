@@ -9,7 +9,8 @@ one-shot hallucination retry / one-shot human-in-the-loop).
 * **LangGraph** - state, nodes, conditional edges, parallel branches, retries, HITL interrupt
 * **LiteLLM** - every LLM call; multi-key pools (Groq + Gemini) with fallback; model **categories**
 * **LangSmith** - full trace, node/model latency, token + cost
-* **Streamlit** - 3 tabs (Query, Dashboard, Live Workflow), genuine token streaming
+* **Streamlit** - 4 tabs (Query, Dashboard, Live Workflow, Retrieval & Evidence), genuine token
+  streaming with a live "mulling" ticker + a prominent **VERDICT** (SAFE / BLOCK / EDIT / HITL)
 * Hard constraint: **total latency < 10 s** - independent work runs concurrently, no wasted LLM calls
 
 Reuses the existing project assets unchanged: the 5 RAG FAISS/BM25 indexes under
@@ -22,26 +23,37 @@ the spaCy entity-drift detector under `master_router/`, and the compliance corpu
 ## 1. Workflow
 
 ```
-User query
+User query  ( + optional sidebar KB override )
   -> Guardrails            regex prompt-injection / jailbreak (BLOCK) + regex PII masking (MASK, continue). No LLM.
-  -> Semantic Cache        MiniLM embed + cosine; >= threshold -> return cached answer, skip the rest
-  -> RAG Router            ONE main agent: 1 LiteLLM tool-call chooses 1 of 5 knowledge bases
+  -> Semantic Cache        MiniLM embed + cosine; >= threshold -> cached answer. Runs in EVERY mode;
+                           in forced-KB mode a hit from a different KB is not served.
+  -> RAG Router            SAME node/path in both modes. Mode 1 (Auto): keyword fast-path -> LLM
+                           tool-call -> LLM JSON -> SEMANTIC PROBE (query-vs-each-KB embedding
+                           similarity; routes harmful queries the LLM refuses to engage with) ->
+                           keyword prior. Mode 2 (forced): the node just returns the selected KB.
   -> Retrieval             vector top-5  ||  BM25 top-5   (parallel)  ->  RRF (k=60)  ->  top-5
-  -> Answer Generator      LiteLLM streaming; model category by KB; records model / tier / tokens / cost
+  -> Answer Generator      LiteLLM streaming; grounded strictly in the retrieved chunks
   -> Performance   ||   Responsibility        (the two branches run concurrently)
         Performance:  RAGAS(1 LLM) || XGBoost(no LLM) || Entity-drift(no LLM)  -> evaluator
-                      verdict = pass | hallucinated (-> retrieval-focused query rewrite) | need_human
-        Responsibility: (Chroma||BM25||Neo4j -> RRF)  ||  (Detoxify||toxic-bert||s-nlp roberta)  -> evaluator
+                      verdict = pass | hallucinated (draft over-reached / broad query -> rewrite) | need_human
+        Responsibility: (Chroma||BM25||Neo4j -> RRF)  ||  (Detoxify||toxic-bert||s-nlp roberta, on query+answer)
                       status = safe | unsafe (-> cited violation report) | uncertain
   -> Decision
-        responsibility unsafe          -> HARMFUL  (stops here; toxicity probs + labels + cited rules)
-        hallucinated & retry_count < 1  -> retrieval  (retry ONCE with the rewritten query)
-        need_human / uncertain & hitl_count < 1 -> HITL interrupt -> user answers -> retrieval (ONCE)
-        else                           -> SAFE  (answer delivered; written to cache)
+        responsibility unsafe          -> HARMFUL  (verdict BLOCK; states why + cites the laws; toxicity table)
+        hallucinated & retry_count < 1  -> retrieval (EDIT: agent rewrites the query for sharper chunks in
+                                           the SAME KB, re-runs retrieval + answer + both branches once)
+        need_human / uncertain & hitl_count < 1 -> HITL interrupt -> user answers -> guardrails
+                                           (the reply is MERGED into the query and the WHOLE pipeline
+                                            re-runs from the start - all downstream state is reset)
+        else                           -> SAFE  (answer delivered; written to cache unless it is a "cannot answer" / toxicity_kb reply)
 ```
 
 Guardrails run **before** the cache so an injected query is neither served from
 nor written to it. One retry, one HITL round - enforced by counters in the state.
+**The HITL resume re-enters at `guardrails`**: the user's clarification is appended
+to the query, every downstream field is cleared, and the identical full pipeline
+runs on the enriched query - so a clarification that adds a topic (or hateful
+content) is re-guarded, re-cached, re-routed, and re-evaluated from scratch.
 
 ---
 
@@ -85,11 +97,16 @@ Models verified available on the provided Groq keys (Jan 2026):
 `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `compound-beta`, `qwen/qwen3.6-27b`,
 `qwen/qwen3.8-27b`. Gemini fallback: `gemini-2.5-flash`. **No llama models.**
 
+> **Gemini keys:** only `AIza…` AI-Studio API keys are used. OAuth access tokens
+> (`AQ.` / `ya29.`) are rejected by LiteLLM's `gemini/` provider (401
+> `ACCESS_TOKEN_TYPE_UNSUPPORTED`) and are dropped so they don't add latency -
+> the catalog is then Groq-only. `CP_GEMINI_ALLOW_ANY=1` forces them back in.
+
 | category | order | used by |
 |---|---|---|
 | `light` | gpt-oss-20b → gpt-oss-120b → gemini-2.5-flash | guard reasoning, misc |
-| `medium` | gpt-oss-120b → gpt-oss-20b → gemini-2.5-flash | answer generation (most KBs) |
-| `heavy` | gpt-oss-120b → compound-beta → qwen3.8-27b → gemini | decision-support answers |
+| `medium` | gpt-oss-120b → gpt-oss-20b → gemini-2.5-flash | answer generation (all KBs, incl. decision-support) |
+| `heavy` | gpt-oss-120b → gpt-oss-20b → compound-beta → qwen3.8-27b → gemini | opt-in for decision-support (`CP_KB_MODEL_DECISION_SUPPORT=heavy`) |
 | `judge` | gpt-oss-120b → qwen3.6-27b → gemini | RAGAS faithfulness |
 | `main_agent` | gpt-oss-120b → gpt-oss-20b → gemini | the RAG router (tool calling) |
 | `suggestion` | gpt-oss-20b → gpt-oss-120b → gemini | retry query rewrite |
@@ -113,17 +130,25 @@ hallucination classifier.
 ## 3. Run
 
 ```bash
-streamlit run controlplane/app/streamlit_app.py     # 3-tab UI
+streamlit run controlplane/app/streamlit_app.py     # 4-tab UI
 pytest controlplane/tests/                          # unit + e2e (mock LLM)
 python -m controlplane.scripts.latency_bench        # asserts p95 < 10 s
 ```
 
-* **Tab 1 - Query / Answer**: type or pick a demo prompt, watch tokens stream, resolve HITL inline.
-* **Tab 2 - Hackathon Dashboard**: node latency, model latency, cost (Gemini only), RAGAS radar,
-  XGBoost gauge, toxicity ensemble bar, retrieved chunks (RAG + responsibility), retry/HITL counters,
-  LangSmith run rollup.
+* **Sidebar - Knowledge base**: `Auto` (the router decides) or pick one KB to force it (Mode 2 -
+  that retriever is used directly, cache + routing bypassed).
+* **Tab 1 - Query / Answer**: type or pick a demo prompt, watch the "mulling" ticker + pipeline
+  steps + tokens stream, see the **VERDICT** (SAFE / BLOCK / EDIT — self-reflection / HUMAN-IN-THE-LOOP),
+  resolve HITL inline (the panel lists exactly what is missing; your reply re-runs the pipeline once).
+  Typing a brand-new query in the main box while a HITL request is open dismisses it and runs the new query.
+* **Tab 2 - Hackathon Dashboard**: verdict banner, router semantic scores, node/model latency,
+  cost (Gemini only), RAGAS radar, XGBoost gauge, **full Entity-Drift panel** (drift-score gauge vs
+  thresholds, matched/added/removed bar chart, entity-level comparison table, relation drift),
+  toxicity ensemble bar, retrieved chunks, the original→revised answer for an EDIT, LangSmith rollup.
 * **Tab 3 - Live Workflow**: the pipeline diagram with the current stage highlighted, updated from
   real graph events.
+* **Tab 4 - Retrieval & Evidence**: every chunk pulled by the RAG + responsibility pipelines, and for
+  a harmful query the reason it was blocked + the laws it violated + the chunks that triggered it.
 
 ---
 
@@ -156,18 +181,29 @@ loads are ~60-90 s; warm they are milliseconds. `CP_PERF_BUDGET_S` /
 
 ## 5. Demonstration prompts
 
-66 prompts - **10 per knowledge base** plus capability prompts for guardrails,
-PII masking, semantic cache, hallucination retry, HITL, harmful/safe
-responsibility handling, streaming and cost tracking. Load any of them from the
-Tab 1 sidebar.
+74 prompts - **10 per knowledge base** plus capability prompts for guardrails,
+PII masking, semantic cache, **self-reflection retry (`rt01`-`rt05`)**,
+**human-in-the-loop (`hi01`-`hi05`)**, **toxic / harmful handling (`hm01`-`hm04`)**,
+streaming and cost tracking. Load any of them from the Tab 1 sidebar.
 
 `python -m controlplane.prompts.demo_prompts` prints this table.
 
-> Hallucination-retry and HITL demos need **real LLM keys** to trigger naturally -
-> in mock mode (`CP_LLM_MOCK=1`) the answer generator returns a synthetic echo of
-> the retrieved context, so the performance branch has nothing realistic to judge.
-> Guardrails, PII masking, routing, retrieval, RRF, toxicity, XGBoost, entity
-> drift, the cache and the full graph all work in mock mode.
+### Verdicts (shown in Tab 1 / Tab 3 / Tab 4)
+
+| Verdict | When | Path |
+|---|---|---|
+| **SAFE** | grounded answer passes both branches | `finalize_safe` |
+| **BLOCK** | guardrail hit, or responsibility flagged the query/answer as harmful (answer states *why* + lists the laws violated) | `finalize_block` / `finalize_harmful` |
+| **EDIT — self-reflection** | performance flagged the draft as ungrounded → the agent rewrote the query and re-ran retrieval+answer+branches in the **same KB** **once** | `aggregate → retrieval` (retry_count = 1) |
+| **HUMAN-IN-THE-LOOP** | the query was too directionless to answer → the pipeline paused, asked for the one missing detail, **merged it into the query and re-ran the WHOLE pipeline from `guardrails`** (can even re-route to another KB) | `hitl_interrupt → guardrails` (hitl_count = 1) |
+
+> **Self-reflection retry** is detector-gated: it fires only when XGBoost / RAGAS /
+> entity-drift actually catch a fabrication. If the model instead refuses cleanly,
+> the query goes to **HITL** instead. Both need **real LLM keys**; in mock mode
+> (`CP_LLM_MOCK=1`) the answer generator returns a synthetic echo so the branches
+> have nothing realistic to judge. Guardrails, PII masking, routing, retrieval,
+> RRF, toxicity, XGBoost, entity drift, the cache and the full graph all work in
+> mock mode.
 
 <!-- PROMPT_TABLE -->
 | # | ID | Knowledge Base | Prompt | Functionality Demonstrated | Expected Behaviour |

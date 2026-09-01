@@ -47,6 +47,7 @@ def stream_run(
     *,
     resume: Optional[str] = None,
     progress: Optional[Dict[str, Any]] = None,
+    forced_kb: Optional[str] = None,
 ) -> Iterator[Tuple[str, Any]]:
     graph = build_graph()
     run_id = str(uuid.uuid4())
@@ -65,7 +66,7 @@ def stream_run(
 
         graph_input: Any = Command(resume=resume)
     else:
-        graph_input = new_state(query or "", thread_id)
+        graph_input = new_state(query or "", thread_id, forced_kb=forced_kb)
         graph_input["langsmith_run_id"] = run_id
 
     last_state: Dict[str, Any] = {}
@@ -81,6 +82,16 @@ def stream_run(
                         progress["visited"].append(Stage.ANSWER)
                     yield ("node", "answer_generator")
                 yield ("token", chunk["token"])
+            elif isinstance(chunk, dict) and chunk.get("type") == "answer_start":
+                if not _answer_stage_sent:
+                    _answer_stage_sent = True
+                    progress["stage"] = Stage.ANSWER
+                    if Stage.ANSWER not in progress["visited"]:
+                        progress["visited"].append(Stage.ANSWER)
+                yield ("node", "answer_generator")
+                yield ("answer_start", None)
+            elif isinstance(chunk, dict) and chunk.get("type") == "reset":
+                yield ("reset", None)
             elif isinstance(chunk, dict) and chunk.get("type") == "answer_done":
                 yield ("answer_done", chunk.get("answer", ""))
         elif mode == "updates":

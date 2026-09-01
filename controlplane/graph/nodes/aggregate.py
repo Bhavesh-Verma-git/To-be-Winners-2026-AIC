@@ -21,8 +21,11 @@ from controlplane.config import settings
 from controlplane.observability import traceable_node
 from controlplane.state import Stage
 
-# don't start a retry/HITL loop if we've already spent this long - protects the 10s ceiling
-_RETRY_DEADLINE_S = float(os.getenv("CP_RETRY_DEADLINE_S", "5.0"))
+_DEBUG = os.getenv("CP_DEBUG", "").lower() in {"1", "true", "yes"}
+# don't start a self-reflection retry if we've already spent this long - the lean
+# retry pass (skips responsibility re-retrieval + RAGAS, caps the answer) adds
+# ~2-2.5s, so this keeps the total under the 10s ceiling.
+_RETRY_DEADLINE_S = float(os.getenv("CP_RETRY_DEADLINE_S", "7.0"))
 
 
 @traceable_node("aggregate")
@@ -37,6 +40,10 @@ def aggregate_node(state: Dict[str, Any]) -> Dict[str, Any]:
     elapsed = time.time() - float(state.get("started_at", time.time()))
     budget_left = elapsed < _RETRY_DEADLINE_S  # room for another retrieval+answer+eval pass?
 
+    if _DEBUG:
+        print(f"[cp:aggregate] perf={perf} resp={resp} retry={retry_count} hitl={hitl_count} "
+              f"elapsed={elapsed:.1f}s budget_left={budget_left}", flush=True)
+
     out: Dict[str, Any] = {
         "stage": Stage.AGGREGATE,
         "stages_visited": [Stage.AGGREGATE],
@@ -46,21 +53,29 @@ def aggregate_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if resp == "unsafe":
         out["_next"] = "harmful"
         out["final_decision"] = "harmful"
+        out["final_verdict"] = "BLOCK"
         return out
 
     if perf == "hallucinated" and retry_count < settings.max_hallucination_retries and budget_left:
         suggestion = state.get("perf_suggestion") or state.get("updated_query") or state.get("guarded_query")
         out["_next"] = "retry"
         out["retry_count"] = retry_count + 1
+        # preserve the pre-EDIT draft + the reason so the UI can show the before/after
+        out["original_answer"] = state.get("answer", "")
+        out["edit_reason"] = state.get("perf_reasoning", "")
         out["updated_query"] = suggestion
+        out["final_verdict"] = "EDIT — self-reflection"
         out["stage"] = Stage.HALLUCINATION_RETRY
         out["stages_visited"] = [Stage.AGGREGATE, Stage.HALLUCINATION_RETRY]
+        if _DEBUG:
+            print(f"[cp:aggregate] EDIT -> re-retrieve with: {str(suggestion)[:120]!r}", flush=True)
         return out
 
     if (hitl_needed or perf == "need_human" or resp == "uncertain") and hitl_count < settings.max_hitl_rounds:
         # HITL pauses (human time doesn't count) so no budget check here
         out["_next"] = "hitl"
         out["hitl_needed"] = True
+        out["final_verdict"] = "HUMAN-IN-THE-LOOP"
         if not state.get("hitl_question"):
             out["hitl_question"] = (
                 "I need more detail to answer this reliably. Please specify the exact "

@@ -21,6 +21,11 @@ import time
 from typing import Any, Dict, List
 
 from controlplane.config import settings
+from controlplane.guardrails.intent import (
+    content_safety_question,
+    defensive_or_educational,
+    harmful_generation_request,
+)
 from controlplane.llm import complete
 
 try:
@@ -87,15 +92,21 @@ def _chunk_hate_signal(main_rrf_chunks: List[Dict[str, Any]]) -> tuple[float, Li
     if not main_rrf_chunks:
         return 0.0, []
     hate_chunks = [c for c in main_rrf_chunks[:5] if _HATE_CHUNK.search(c.get("text", ""))]
-    # Also check metadata: target= fields indicate protected-group targeting
-    targeted = [
-        c for c in main_rrf_chunks[:5]
-        if (c.get("metadata", {}) or {}).get("target") not in {None, "", "none", "not_hate"}
-    ]
+    # Also check the corpus's OWN annotations: a non-empty target-group label means
+    # the chunk is an annotated example of content targeting a protected group.
+    _blank = {None, "", "none", "not_hate", "nan", "n/a", "not hate", "no target"}
+    targeted = []
+    for c in main_rrf_chunks[:5]:
+        md = c.get("metadata", {}) or {}
+        tg = md.get("target group") or md.get("target_group") or md.get("target") or ""
+        if str(tg).strip().lower() not in _blank:
+            targeted.append(c)
     hit_count = len(set([id(c) for c in hate_chunks + targeted]))
     if hit_count == 0:
         return 0.0, []
-    strength = min(1.0, 0.4 + 0.15 * hit_count)
+    # 3+ of the top-5 chunks are annotated hate/target-group examples -> the query
+    # unambiguously surfaced prohibited material.
+    strength = 1.0 if hit_count >= 3 else min(0.95, 0.45 + 0.18 * hit_count)
     return strength, ["EU AI Act – Article 5 (prohibited practices)",
                       "NIST AI RMF – GOVERN 1.1 (fairness)",
                       "UN Declaration of Human Rights – Article 1"]
@@ -111,8 +122,15 @@ def _clause_signal(rrf_chunks: List[Dict[str, Any]], answer: str, query: str = "
     Exception: if the QUERY itself contains hate-speech / dehumanising terms,
     we immediately return strength=1.0 regardless of the answer text.
     """
-    # Fast-path: hate-speech / slur in the query itself → always unsafe
-    if query and _HATE_QUERY.search(query):
+    # Fast-path: hate-speech / slur in the query itself → always unsafe.
+    # Exception: analytical "is <phrase> hate speech?" and educational / defensive
+    # "how to counter hate speech" queries are fine.
+    if (
+        query
+        and _HATE_QUERY.search(query)
+        and not content_safety_question(query)
+        and not defensive_or_educational(query)
+    ):
         rules = sorted({
             ((c.get("metadata", {}) or {}).get("law_or_article") or c.get("title"))
             for c in rrf_chunks[:5]
@@ -189,13 +207,18 @@ def evaluate_responsibility(state: Dict[str, Any]) -> Dict[str, Any]:
     main_rrf = state.get("rrf_chunks", []) or []           # main RAG chunks (may contain hate content)
     selected_kb = state.get("selected_kb") or ""
 
+    # analytical "is X hate speech?" and educational "how to counter hate speech"
+    # queries legitimately pull annotated hate-speech examples from the content-safety
+    # KB - that retrieval is NOT itself evidence of a violation.
+    _benign_q = content_safety_question(query) or defensive_or_educational(query)
+
     # 1. Check hate-speech in the query itself / responsibility law chunks
     clause_strength, rules = _clause_signal(rrf, answer, query=query)
 
     # 2. Check if the MAIN retrieved chunks contain hate-speech material.
     #    This catches cases where the LLM refused to answer ("I can't help") but
     #    the retrieved documents are themselves hate-speech / discriminatory.
-    chunk_strength, chunk_rules = _chunk_hate_signal(main_rrf)
+    chunk_strength, chunk_rules = (0.0, []) if _benign_q else _chunk_hate_signal(main_rrf)
     if chunk_strength > clause_strength:
         clause_strength = chunk_strength
         rules = rules or chunk_rules
@@ -206,10 +229,21 @@ def evaluate_responsibility(state: Dict[str, Any]) -> Dict[str, Any]:
     soft = tox_max >= settings.tox_soft_threshold
     is_tox_route = (selected_kb == "toxicity_kb")
 
-    if hard or (clause_strength >= 0.8):
+    # A direct request to produce/justify hateful or discriminatory content about a
+    # protected group is prohibited regardless of what the toxicity models score on
+    # the (often refused) answer. An analytical "is X hate speech?" question is NOT.
+    harmful_request = harmful_generation_request(query) and not content_safety_question(query)
+    if harmful_request:
+        clause_strength = max(clause_strength, 1.0)
+    # educational / defensive / analytical queries: never auto-escalate from the
+    # soft band just because we routed to the content-safety KB. Let the LLM
+    # report be the judge (it defaults to COMPLIANT for benign statements).
+    benign_framing = defensive_or_educational(query) or content_safety_question(query)
+
+    if hard or (clause_strength >= 0.8) or harmful_request:
         status = "unsafe"
     elif soft or clause_strength >= 0.5:
-        status = "unsafe" if is_tox_route else "uncertain"
+        status = "uncertain" if (benign_framing or not is_tox_route) else "unsafe"
     else:
         status = "safe"
 
@@ -224,6 +258,12 @@ def evaluate_responsibility(state: Dict[str, Any]) -> Dict[str, Any]:
         "evidence_chunks": rrf[:5],
     }
 
+    _DEFAULT_RULES = [
+        "EU AI Act (Reg. 2024/1689) — Article 5: prohibited AI practices",
+        "NIST AI RMF (AI 100-1) — GOVERN 1.1: fairness & harmful-bias management",
+        "UN Universal Declaration of Human Rights — Article 1 (equal dignity)",
+    ]
+
     if status in {"unsafe", "uncertain"}:
         # Combine responsibility law chunks + the main RAG chunks as evidence for the LLM report
         combined_evidence = rrf[:3] + [
@@ -236,7 +276,9 @@ def evaluate_responsibility(state: Dict[str, Any]) -> Dict[str, Any]:
         # clause_strength==1.0 means we KNOW it's hate-speech — never let the LLM flip it back.
         if clause_strength >= 1.0 or hard or report["is_violation"]:
             out["resp_status"] = "unsafe"
-            out["violated_rules"] = rules or _rules_from_report(report["report"])
+            out["violated_rules"] = (
+                rules or _rules_from_report(report["report"]) or _DEFAULT_RULES
+            )
         else:
             out["resp_status"] = "safe"
         if report.get("llm_call"):

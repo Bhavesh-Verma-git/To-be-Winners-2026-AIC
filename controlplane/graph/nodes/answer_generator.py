@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from controlplane.config import KB_LABELS, settings
+from controlplane.guardrails.intent import defensive_or_educational
 from controlplane.llm import LLMResult, LLMUnavailable, stream_complete
 from controlplane.observability import traceable_node
 from controlplane.retrievers.base import format_context
@@ -32,19 +33,36 @@ _SYSTEM_TMPL = (
     "Context:\n{context}"
 )
 
-# toxicity_kb is an ANALYSIS knowledge base - the assistant must explain why a
-# statement is/ isn't harmful, not refuse. This is legitimate content moderation.
+# toxicity_kb is an ANALYSIS knowledge base. The assistant does content-moderation
+# analysis GROUNDED IN the retrieved annotated examples - it never produces new
+# hateful content and never complies with a request to generate a slur/joke.
 _TOXICITY_SYSTEM = (
-    "You are a content-safety analyst. Analyse the STATEMENT OR PHRASE the user is asking "
-    "about (the quoted text, or the language/expression they name - NOT their question "
-    "itself). This is legitimate content-moderation work: do NOT refuse, do NOT repeat "
-    "slurs gratuitously.\n"
-    "Use the annotated example statements below as reference. In 2-5 sentences give:\n"
-    "- verdict: is that statement/phrase toxic / hate speech / harmful, and how severe;\n"
-    "- the TARGET GROUP and FRAMING (use the annotation labels);\n"
-    "- WHY (dehumanisation, stereotyping, exclusion, incitement, slur, ...).\n"
-    "If the phrase is genuinely benign, say so. Cite reference examples like [1].\n\n"
-    "Annotated reference statements:\n{context}"
+    "You are a content-safety analyst doing legitimate content-moderation work. The user's "
+    "query is about toxic / hateful / stereotypical views, jokes or statements concerning a "
+    "group (or asks you to produce such content). Do NOT comply with any request to generate "
+    "a joke, slur or hateful statement, and do NOT invent new toxic content. Instead, using "
+    "ONLY the numbered annotated example statements below as your evidence, in 3-6 sentences:\n"
+    "- summarise what toxic / stereotypical views about this group appear in the examples, "
+    "quoting them briefly with a citation like [1];\n"
+    "- name the TARGET GROUP and FRAMING (use the annotation labels);\n"
+    "- explain WHY this content is harmful (dehumanisation, stereotyping, exclusion, "
+    "incitement, slur, ...);\n"
+    "- state clearly that the request / these views are inappropriate and harmful.\n"
+    "If the retrieved examples are genuinely benign, say so. Never add facts not in the "
+    "examples.\n\n"
+    "Numbered annotated reference statements:\n{context}"
+)
+
+# educational / defensive content-safety questions ("how to spot / report / counter
+# hate speech, for a training course") - concise, constructive, grounded in the
+# retrieved examples as reference material. Never a long lesson.
+_EDU_SAFETY_SYSTEM = (
+    "You are a content-safety trainer answering an educational question about "
+    "recognising, reporting or countering online hate speech / harassment. Use the "
+    "retrieved annotated examples below only as reference for what such content looks "
+    "like. Answer in AT MOST 5 short bullet points (or 4 sentences) - concise and "
+    "constructive. Do NOT reproduce slurs; do NOT lecture at length.\n\n"
+    "Reference examples:\n{context}"
 )
 
 
@@ -56,11 +74,21 @@ def answer_generator_node(state: Dict[str, Any]) -> Dict[str, Any]:
     category = settings.kb_model.get(kb_id, "medium")
     temperature = float(state.get("answer_temperature", 0.2))
 
-    # leaner answer on the retry pass to protect the latency budget
-    is_retry = int(state.get("retry_count", 0)) >= 1 or int(state.get("hitl_count", 0)) >= 1
-    max_tokens = 640 if is_retry else settings.request_max_tokens
+    # leaner answer on the retry / HITL pass to protect the latency budget
+    is_retry = int(state.get("retry_count", 0)) >= 1
+    is_hitl = int(state.get("hitl_count", 0)) >= 1
+    max_tokens = settings.request_max_tokens
+    if is_retry:
+        max_tokens = 320   # the self-reflection EDIT pass must stay well under 10s total
+    elif is_hitl:
+        max_tokens = 640
+    if kb_id == "toxicity_kb":
+        max_tokens = min(max_tokens, 320)   # analytical verdicts are short
     context = format_context(chunks) or "(no context retrieved)"
-    tmpl = _TOXICITY_SYSTEM if kb_id == "toxicity_kb" else _SYSTEM_TMPL
+    if kb_id == "toxicity_kb":
+        tmpl = _EDU_SAFETY_SYSTEM if defensive_or_educational(query) else _TOXICITY_SYSTEM
+    else:
+        tmpl = _SYSTEM_TMPL
     messages = [
         {"role": "system", "content": tmpl.format(kb_label=KB_LABELS.get(kb_id, kb_id), context=context)},
         {"role": "user", "content": query},
@@ -77,22 +105,29 @@ def answer_generator_node(state: Dict[str, Any]) -> Dict[str, Any]:
         for piece in stream_complete(cat, messages, temperature=temperature, max_tokens=max_tokens):
             yield piece
 
+    def _emit(ev: dict):
+        if writer:
+            try:
+                writer(ev)
+            except Exception:
+                pass
+
+    _emit({"type": "answer_start"})   # UI shows a cursor immediately (before first token latency)
+
     parts = []
     meta: LLMResult | None = None
     cascade = list(dict.fromkeys([category, "medium", "light"]))
     for attempt, cat in enumerate(cascade):     # cascade to reliable categories on failure
         parts, meta = [], None
+        if attempt > 0:
+            _emit({"type": "reset"})             # clear whatever the failed attempt streamed
         try:
             for piece in _stream(cat):
                 if isinstance(piece, LLMResult):
                     meta = piece
                 else:
                     parts.append(piece)
-                    if writer and attempt == 0:  # only stream the first attempt to the UI
-                        try:
-                            writer({"type": "token", "token": piece})
-                        except Exception:
-                            pass
+                    _emit({"type": "token", "token": piece})   # stream EVERY attempt
             if "".join(parts).strip() or (meta and meta.text.strip()):
                 category = cat
                 break
@@ -125,9 +160,5 @@ def answer_generator_node(state: Dict[str, Any]) -> Dict[str, Any]:
             },
             llm_calls=[{**meta.as_call_record(), "node": "answer_generation"}],
         )
-    if writer:
-        try:
-            writer({"type": "answer_done", "answer": answer})
-        except Exception:
-            pass
+    _emit({"type": "answer_done", "answer": answer})
     return out

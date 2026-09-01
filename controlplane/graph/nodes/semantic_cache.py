@@ -12,7 +12,13 @@ from controlplane.state import Stage
 @traceable_node("semantic_cache")
 def semantic_cache_node(state: Dict[str, Any]) -> Dict[str, Any]:
     query = state.get("guarded_query") or state.get("original_query", "")
+    forced = (state.get("forced_kb") or "").strip()
     hit = get_cache().lookup(query)
+
+    # Same pipeline for normal and manual mode. Only difference: if a KB was
+    # forced, a cache entry that came from a DIFFERENT KB must not be served.
+    if hit is not None and forced and (hit.meta or {}).get("selected_kb") not in (None, "", forced):
+        hit = None
 
     if hit is None:
         return {"stage": Stage.CACHE, "stages_visited": [Stage.CACHE], "cache_hit": False}

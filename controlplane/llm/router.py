@@ -437,7 +437,7 @@ def stream_complete(
     import litellm
 
     t0 = time.perf_counter()
-    parts: List[str] = []
+    parts: List[str] = []            # visible answer content only
     # best-guess base model for the category (overridden by the real name from chunks)
     _cat_models = settings.model_catalog.get(category, [category])
     model_id = _cat_models[0] if _cat_models else category
@@ -445,6 +445,7 @@ def stream_complete(
     stream_failed = False
     buf = ""
     in_think = None
+    saw_content = False
 
     try:
         chunks = router.completion(
@@ -455,7 +456,12 @@ def stream_complete(
             stream=True,
         )
         it = iter(chunks)
+        # hard wall-clock cap on the streamed answer so a slow / run-away generation
+        # can never blow the <10s pipeline budget - keep whatever arrived by then.
+        _stream_cap = float(os.getenv("CP_STREAM_CAP_S", "7.0"))
         while True:
+            if (time.perf_counter() - t0) > _stream_cap and parts:
+                break
             try:
                 chunk = next(it)
             except StopIteration:
@@ -467,18 +473,20 @@ def stream_complete(
             try:
                 choices = getattr(chunk, "choices", None) or []
                 d = choices[0].delta if choices else None
-                delta = (getattr(d, "content", None)
-                         or getattr(d, "reasoning_content", None)
-                         or getattr(d, "reasoning", None)) if d else None
+                # ONLY the real `content` is streamed to the UI. `reasoning` /
+                # `reasoning_content` (the model's chain-of-thought) is discarded -
+                # streaming it made the UI show thinking text then jump to the answer.
+                delta = getattr(d, "content", None) if d else None
             except Exception:
                 delta = None
             if delta:
+                saw_content = True
                 parts.append(delta)
                 if in_think is False:
                     yield delta
                 else:
                     buf += delta
-                    if in_think is None and len(buf) >= 12:
+                    if in_think is None and len(buf) >= 7:
                         in_think = buf.lstrip().lower().startswith("<think>")
                         if not in_think:
                             yield buf

@@ -1,9 +1,11 @@
 """
-ControlPlane.ai - Streamlit UI (3 tabs).
+ControlPlane.ai - Streamlit UI (4 tabs).
 
-    Tab 1  Query / Answer     - ask, watch the pipeline advance + tokens stream, resolve HITL
-    Tab 2  Dashboard          - node & model latency, cost (Gemini only), chunks, scores
-    Tab 3  Live Workflow      - the pipeline graph with the path actually taken
+    Tab 1  Query / Answer        - ask, watch the "mulling" ticker + pipeline steps + tokens
+                                   stream, see the VERDICT (SAFE / BLOCK / EDIT / HITL), resolve HITL
+    Tab 2  Dashboard             - node & model latency, cost (Gemini only), chunks, scores
+    Tab 3  Live Workflow         - the pipeline graph with the path actually taken
+    Tab 4  Retrieval & Evidence  - every retrieved chunk + the laws a harmful query violated
 
 Run:  streamlit run controlplane/app/streamlit_app.py
 """
@@ -19,14 +21,17 @@ import time
 
 import streamlit as st
 
+from controlplane.app.mulling import MullFeed, mull_html
 from controlplane.app.runner import new_thread_id, stream_run
 from controlplane.app.tab_dashboard import render_dashboard
 from controlplane.app.tab_evidence import render_evidence
 from controlplane.app.tab_workflow import STAGE_STEPS, render_workflow, stage_strip_html
 from controlplane.cache import get_cache
-from controlplane.config import settings
+from controlplane.config import KB_IDS, KB_LABELS, settings
 from controlplane.prompts import DEMO_PROMPTS
 from controlplane.state import Stage
+
+_AUTO = "Auto — router decides"
 
 st.set_page_config(page_title="ControlPlane.ai", page_icon="🛡️", layout="wide",
                    initial_sidebar_state="expanded")
@@ -67,6 +72,16 @@ st.markdown(
   .cp-step .dot { width:7px;height:7px;border-radius:50%;background:currentColor; }
   .stChatMessage { background:#0f1626 !important; border:1px solid #1d2842 !important;
      border-radius:14px !important; }
+  .cp-mull { font-size:12.5px; color:#8a9ec9; font-style:italic; line-height:1.7;
+     padding:6px 2px; letter-spacing:.2px; }
+  .cp-mull-dot { color:#7aa2ff; animation:cp-pulse 1s ease-in-out infinite; font-style:normal; }
+  @keyframes cp-pulse { 0%,100%{opacity:.25} 50%{opacity:1} }
+  .cp-verdict { display:inline-block; padding:6px 14px; border-radius:10px; font-weight:800;
+     font-size:13px; letter-spacing:.5px; margin:2px 0 8px; }
+  .cp-verdict.safe  { background:#0f2a22; color:#57e0c7; border:1px solid #1f6b52; }
+  .cp-verdict.block { background:#2a1414; color:#ff8f8f; border:1px solid #6b2a2a; }
+  .cp-verdict.edit  { background:#1c2340; color:#b9a4ff; border:1px solid #4a3d8a; }
+  .cp-verdict.hitl  { background:#2a2413; color:#ffd88a; border:1px solid #7a6320; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -80,6 +95,7 @@ ss.setdefault("final_state", {})
 ss.setdefault("progress", {"stage": Stage.START, "visited": []})
 ss.setdefault("pending_interrupt", None)
 ss.setdefault("queued_prompt", None)
+ss.setdefault("forced_kb", None)          # None -> Auto routing; else a KB id (Mode 2)
 
 
 def _sysline() -> str:
@@ -113,35 +129,58 @@ def _run(prompt: str | None, resume: str | None = None) -> None:
     ss.pending_interrupt = None
 
     step_ph = st.empty()
+    mull_ph = st.empty()
+    verdict_ph = st.empty()
     ans_ph = st.empty()
     tokens: list[str] = []
     t0 = time.time()
+    feed = MullFeed()
 
     def _paint_steps():
         step_ph.markdown(stage_strip_html(ss.progress["stage"], set(ss.progress["visited"])),
                          unsafe_allow_html=True)
 
+    def _paint_mull():
+        feed.add_stage(ss.progress["stage"])
+        mull_ph.markdown(mull_html(feed.pump()), unsafe_allow_html=True)
+
     _paint_steps()
+    _paint_mull()
     _last_paint = 0.0
-    for kind, payload in stream_run(prompt, ss.thread_id, resume=resume, progress=ss.progress):
+    _streamed = ""            # authoritative answer text (from answer_done if present)
+    for kind, payload in stream_run(prompt, ss.thread_id, resume=resume, progress=ss.progress,
+                                    forced_kb=ss.forced_kb):
         if kind == "node":
             _paint_steps()
+            _paint_mull()
+        elif kind == "answer_start":
+            ans_ph.markdown(" ▌")             # cursor shows immediately, before first-token latency
+        elif kind == "reset":
+            tokens = []                       # a failed model attempt - clear its partial output
+            ans_ph.markdown("_regenerating…_")
         elif kind == "token":
             tokens.append(payload)
             now = time.time()
-            if now - _last_paint > 0.06:          # throttle re-renders
+            if now - _last_paint > 0.03:      # ~33 fps repaint
                 ans_ph.markdown("".join(tokens) + " ▌")
                 _last_paint = now
+        elif kind == "answer_done":
+            _streamed = payload or "".join(tokens)
+            ans_ph.markdown(_streamed)        # snap to the complete text (fills any streaming gap)
         elif kind == "interrupt":
             ss.pending_interrupt = payload
+            mull_ph.empty()
             step_ph.markdown(stage_strip_html(Stage.HITL, set(ss.progress["visited"])),
                              unsafe_allow_html=True)
+            verdict_ph.markdown(_verdict_html("HUMAN-IN-THE-LOOP"), unsafe_allow_html=True)
             return
         elif kind == "final":
             ss.final_state = payload
 
     state = ss.final_state or {}
-    final = state.get("final_answer") or "".join(tokens) or "(no answer)"
+    final = state.get("final_answer") or _streamed or "".join(tokens) or "(no answer)"
+    mull_ph.empty()
+    verdict_ph.markdown(_verdict_html(state.get("final_verdict")), unsafe_allow_html=True)
     ans_ph.markdown(final)
     step_ph.markdown(stage_strip_html(Stage.DONE, set(ss.progress["visited"]) | {Stage.DONE}),
                      unsafe_allow_html=True)
@@ -149,6 +188,7 @@ def _run(prompt: str | None, resume: str | None = None) -> None:
     ss.history.append({
         "role": "assistant",
         "content": final,
+        "verdict": state.get("final_verdict"),
         "badges": state.get("final_verdict_badges", []),
         "meta": {
             "decision": state.get("final_decision"),
@@ -174,9 +214,37 @@ def _badge_html(b: str) -> str:
     return f'<span class="cp-badge {cls}">{html.escape(b)}</span>'
 
 
+def _verdict_html(v: str | None) -> str:
+    if not v:
+        return ""
+    low = v.lower()
+    cls = "safe"
+    if "block" in low:
+        cls = "block"
+    elif "edit" in low:
+        cls = "edit"
+    elif "human" in low or "hitl" in low:
+        cls = "hitl"
+    return f'<span class="cp-verdict {cls}">VERDICT: {html.escape(v.upper())}</span>'
+
+
 # ============================ TAB 1 ============================
 with tab_q:
     with st.sidebar:
+        st.markdown("### 🎛️ Knowledge base")
+        _kb_opts = [_AUTO] + [f"{KB_LABELS.get(k, k)}  ({k})" for k in KB_IDS]
+        _kb_sel = st.selectbox(
+            "retriever", _kb_opts, label_visibility="collapsed",
+            help="Auto = the intelligent router picks the KB. Pick one to force it "
+                 "(Mode 2: that retriever is used directly, no routing).",
+        )
+        ss.forced_kb = None if _kb_sel == _AUTO else KB_IDS[_kb_opts.index(_kb_sel) - 1]
+        if ss.forced_kb:
+            st.caption(f"🔒 forced → `{ss.forced_kb}` (router bypassed)")
+        else:
+            st.caption("🧭 auto routing (LLM agent + semantic fallback)")
+        st.divider()
+
         st.markdown("### 🎛️ Demo prompts")
         opts = ["—"] + [f"{p['id']} · {p['prompt'][:46]}" for p in DEMO_PROMPTS]
         sel = st.selectbox("pick one", opts, label_visibility="collapsed")
@@ -202,6 +270,8 @@ with tab_q:
     # history
     for m in ss.history:
         with st.chat_message(m["role"], avatar="🧑‍💻" if m["role"] == "user" else "🛡️"):
+            if m.get("verdict"):
+                st.markdown(_verdict_html(m["verdict"]), unsafe_allow_html=True)
             st.markdown(m["content"])
             if m.get("badges"):
                 st.markdown(" ".join(_badge_html(str(b)) for b in m["badges"]), unsafe_allow_html=True)
@@ -219,24 +289,45 @@ with tab_q:
     # HITL panel
     if ss.pending_interrupt:
         pi = ss.pending_interrupt
-        st.warning("🙋 **Human input required to continue** (one-shot)")
-        st.markdown(f"**{pi.get('question', 'More information is needed.')}**")
-        with st.expander("draft answer / why"):
-            st.write(pi.get("draft_answer", ""))
+        st.markdown(_verdict_html("HUMAN-IN-THE-LOOP"), unsafe_allow_html=True)
+        st.warning("🙋 **The pipeline paused — it needs one detail from you to answer this.**")
+        st.markdown(pi.get("question", "More information is needed."))
+        cols = st.columns(2)
+        cols[0].metric("routed to", pi.get("selected_kb", "—"))
+        cols[1].metric("performance", pi.get("perf_verdict", "—"))
+        with st.expander("what the pipeline had so far"):
+            st.caption(f"draft: {pi.get('draft_answer', '') or '—'}")
             st.caption(pi.get("perf_reasoning", "") or pi.get("resp_status", ""))
-        reply = st.text_input("Your answer", key="hitl_reply")
-        if st.button("Continue pipeline ▶", type="primary") and reply.strip():
-            ss.history.append({"role": "user", "content": f"↳ {reply}"})
-            with st.chat_message("assistant", avatar="🛡️"):
-                _run(None, resume=reply.strip())
-            st.rerun()
+        reply = st.text_area("Your answer / clarification", key="hitl_reply",
+                             placeholder="e.g. casual leave — how many days per year")
+        c1, c2 = st.columns([1, 3])
+        if c1.button("Submit & re-run ▶", type="primary"):
+            if reply.strip():
+                ss.history.append({"role": "user", "content": f"↳ (clarification) {reply.strip()}"})
+                ss.pending_interrupt = None
+                with st.chat_message("assistant", avatar="🛡️"):
+                    _run(None, resume=reply.strip())
+                st.rerun()
+            else:
+                st.error("Type your answer first, then Submit.")
+        c2.caption("Your text is **merged into the question** and the **whole pipeline re-runs "
+                   "from the start** (guardrails → cache → routing → retrieval → answer → checks).")
 
     prompt = st.chat_input("Ask about refunds, HR policy, Azure, meetings, content-safety…")
     if ss.queued_prompt and not prompt:
         prompt = ss.queued_prompt
     ss.queued_prompt = None
 
-    if prompt and not ss.pending_interrupt:
+    if prompt:
+        # If a HITL request is still open and the user typed a NEW query in the main
+        # box (instead of answering in the HITL panel), treat it as a fresh query:
+        # drop the stale interrupt + its paused checkpoint so it can't contaminate
+        # the new run.
+        if ss.pending_interrupt:
+            ss.pending_interrupt = None
+            ss.thread_id = new_thread_id()
+            ss.final_state = {}
+            st.toast("Started a new query — the pending clarification request was dismissed.")
         ss.history.append({"role": "user", "content": prompt})
         with st.chat_message("user", avatar="🧑‍💻"):
             st.markdown(prompt)

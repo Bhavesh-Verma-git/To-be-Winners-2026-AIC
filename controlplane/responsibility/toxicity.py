@@ -120,29 +120,56 @@ class ToxicityEnsemble:
         return self._pick(self._roberta(text, truncation=True))
 
     # ---- public -------------------------------------------------------------
-    async def score(self, text: str) -> Dict[str, Any]:
+    async def score(self, text: str, *, also: str = "") -> Dict[str, Any]:
+        """Score `text` with all 3 models. If `also` is given (e.g. the user's
+        query alongside the generated answer) it is scored too and the WORST
+        (max) probability per model is kept - so a toxic query is caught even
+        when the model produced a bland refusal."""
         import asyncio
 
         self.load()
         t0 = time.perf_counter()
-        dx, tb, rb = await asyncio.gather(
-            asyncio.to_thread(self._score_detoxify, text),
-            asyncio.to_thread(self._score_toxic_bert, text),
-            asyncio.to_thread(self._score_roberta, text),
-        )
+        texts = [t for t in (text, also) if t and t.strip()]
+        if not texts:
+            texts = [""]
+        jobs = []
+        for t in texts:
+            jobs += [
+                asyncio.to_thread(self._score_detoxify, t),
+                asyncio.to_thread(self._score_toxic_bert, t),
+                asyncio.to_thread(self._score_roberta, t),
+            ]
+        res = await asyncio.gather(*jobs)
+        # res is [d,t,r, d,t,r, ...] - fold per model by max prob
+        per = {"detoxify": [], "unitary": [], "snlp": []}
+        for i in range(0, len(res), 3):
+            per["detoxify"].append(res[i])
+            per["unitary"].append(res[i + 1])
+            per["snlp"].append(res[i + 2])
+
+        def _worst(cands):
+            avail = [c for c in cands if c.get("label") != "unavailable"]
+            if not avail:
+                return cands[0]
+            return max(avail, key=lambda c: c.get("prob", 0.0))
+
+        dx, tb, rb = _worst(per["detoxify"]), _worst(per["unitary"]), _worst(per["snlp"])
+        for d in (dx, tb, rb):
+            d["label"] = "toxic" if d.get("prob", 0.0) >= 0.5 else "non-toxic"
         probs = [d["prob"] for d in (dx, tb, rb) if d.get("label") != "unavailable"]
         return {
             "detoxify": dx,
             "unitary": tb,
             "snlp": rb,
             "toxicity_max": round(max(probs), 4) if probs else 0.0,
+            "scored_query": bool(also and also.strip()),
             "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
         }
 
-    def score_sync(self, text: str) -> Dict[str, Any]:
+    def score_sync(self, text: str, *, also: str = "") -> Dict[str, Any]:
         import asyncio
 
-        return asyncio.run(self.score(text))
+        return asyncio.run(self.score(text, also=also))
 
 
 _ensemble: Optional[ToxicityEnsemble] = None

@@ -43,38 +43,29 @@ def responsibility_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     out: Dict[str, Any] = {"stage": Stage.RESPONSIBILITY, "stages_visited": [Stage.RESPONSIBILITY]}
 
-    with cf.ThreadPoolExecutor(max_workers=3) as ex:
-        # Score toxicity on BOTH the query AND the answer, take the max.
-        # The harmful signal may live in the query (e.g. a slur) even when
-        # the AI answer is clean educational prose.
-        tox_query_fut = ex.submit(ens.score_sync, query)
-        tox_answer_fut = ex.submit(ens.score_sync, answer) if answer else None
+    if retry_fast:
+        # The prior pass already cleared this answer as safe with near-zero toxicity
+        # and we're only revising it for grounding - re-use the prior evidence and
+        # toxicity scores so the EDIT retry stays inside the 10s budget.
         retr = None
-        if not retry_fast:
-            try:
-                retr = asyncio.run(kb.retrieve(f"{query}\n\n{answer}"))
-            except Exception as e:  # noqa: BLE001
-                retr = {"vector_chunks": [], "bm25_chunks": [], "graph_chunks": [],
-                        "rrf_chunks": [], "meta": {"error": str(e)}}
+        tox = {k: state.get("toxicity", {}).get(k, {}) for k in ("detoxify", "unitary", "snlp")}
+        tox["toxicity_max"] = state.get("toxicity_max", 0.0)
+    else:
+        ex = cf.ThreadPoolExecutor(max_workers=1)
+        # Score the 3 models on the ANSWER *and* the QUERY in one shot (per-model
+        # max). A toxic query is flagged even when the model gave a bland refusal.
+        tox_fut = ex.submit(ens.score_sync, answer or query, also=(query if answer else ""))
+        retr = None
         try:
-            tox_q = tox_query_fut.result(timeout=8)
+            retr = asyncio.run(kb.retrieve(f"{query}\n\n{answer}"))
+        except Exception as e:  # noqa: BLE001
+            retr = {"vector_chunks": [], "bm25_chunks": [], "graph_chunks": [],
+                    "rrf_chunks": [], "meta": {"error": str(e)}}
+        try:
+            tox = tox_fut.result(timeout=8)
         except Exception:
-            tox_q = {}
-        tox_a = {}
-        if tox_answer_fut is not None:
-            try:
-                tox_a = tox_answer_fut.result(timeout=8)
-            except Exception:
-                tox_a = {}
-        # Merge: keep the higher toxicity_max across query and answer scores
-        tox_max_q = float(tox_q.get("toxicity_max") or 0.0)
-        tox_max_a = float(tox_a.get("toxicity_max") or 0.0)
-        if tox_max_q >= tox_max_a:
-            tox = tox_q
-        else:
-            tox = tox_a
-        # Override toxicity_max with the combined maximum
-        tox["toxicity_max"] = round(max(tox_max_q, tox_max_a), 4)
+            tox = {}
+        ex.shutdown(wait=False)   # never block on a slow toxicity model
 
     if retr is not None:
         out["resp_vector_chunks"] = retr["vector_chunks"]
@@ -99,4 +90,9 @@ def responsibility_node(state: Dict[str, Any]) -> Dict[str, Any]:
         out["llm_calls"] = [{**verdict["_resp_llm_call"], "node": "responsibility_report"}]
 
     out["resp_branch_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    import os as _os
+    if _os.getenv("CP_DEBUG", "").lower() in {"1", "true", "yes"}:
+        print(f"[cp:responsibility] status={out.get('resp_status')} tox_max={out.get('toxicity_max')} "
+              f"rules={ (out.get('violated_rules') or [])[:3] } "
+              f"resp_rrf_n={len(out.get('resp_rrf_chunks') or [])} branch_ms={out['resp_branch_ms']}", flush=True)
     return out

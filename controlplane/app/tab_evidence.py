@@ -43,14 +43,27 @@ def render_evidence(state: Dict[str, Any]) -> None:
 
     kb = state.get("selected_kb", "—")
     dec = str(state.get("final_decision", "—")).upper()
-    st.markdown(f"### Evidence for the last query  —  route `{kb}`  ·  decision **{dec}**")
+    verdict = state.get("final_verdict") or dec
+    q = state.get("original_query", "")
+    st.markdown(f"### Evidence for the last query  —  route `{kb}`")
+    vcls = {"BLOCK": "block", "SAFE": "safe"}.get(str(verdict).split()[0].upper(), "info")
+    st.markdown(
+        f"<span class='cp-badge {vcls}'>VERDICT: {html.escape(str(verdict).upper())}</span>",
+        unsafe_allow_html=True,
+    )
+    if q:
+        st.caption(f"query: “{q}”")
 
     # ---- laws / rules implicated ----
     rules = state.get("violated_rules", []) or []
     resp_status = state.get("resp_status")
-    if rules or resp_status in ("unsafe", "uncertain"):
-        box = st.error if resp_status == "unsafe" else st.warning
-        box("**Laws / rules implicated:** " + (", ".join(rules) if rules else "under review"))
+    if resp_status == "unsafe" or dec == "HARMFUL":
+        st.error(
+            "**This query is inappropriate / harmful.** A normal answer was withheld. "
+            "It violates:\n" + ("\n".join(f"- {r}" for r in rules) if rules else "- (see analysis)")
+        )
+    elif rules or resp_status == "uncertain":
+        st.warning("**Laws / rules implicated:** " + (", ".join(rules) if rules else "under review"))
     if state.get("resp_report"):
         with st.expander("📜 Full compliance analysis", expanded=(resp_status == "unsafe")):
             st.markdown(state["resp_report"])

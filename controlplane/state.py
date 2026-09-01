@@ -46,9 +46,11 @@ class ControlPlaneState(TypedDict, total=False):
     cached_meta: Optional[Dict[str, Any]]
 
     # ---- RAG router (the one main agent) -----------------------------------------
+    forced_kb: Optional[str]       # sidebar override; when set the router uses it directly
     selected_kb: Optional[str]     # one of KB_IDS or "none"
     router_reason: Optional[str]
     router_confidence: Optional[float]
+    router_semantic_scores: Dict[str, float]   # query-vs-KB similarity (debug/observability)
 
     # ---- Retrieval --------------------------------------------------------------
     vector_chunks: List[Dict[str, Any]]
@@ -58,6 +60,8 @@ class ControlPlaneState(TypedDict, total=False):
 
     # ---- Answer generation --------------------------------------------------------------
     answer: str
+    original_answer: Optional[str]         # the pre-EDIT draft (set when a self-reflection retry fires)
+    edit_reason: Optional[str]             # why the performance branch triggered the EDIT
     model_used: Optional[str]
     model_category: Optional[str]           # light | medium | heavy | ...
     model_tier: Optional[int]               # 1|2|3  (feeds XGBoost, matches feature_engineering)
@@ -104,10 +108,12 @@ class ControlPlaneState(TypedDict, total=False):
     hitl_question: Optional[str]
     hitl_context: Optional[Dict[str, Any]]
     hitl_response: Optional[str]
+    pre_hitl_query: Optional[str]           # the un-enriched query, kept for the UI after a HITL round
 
     # ---- Final --------------------------------------------------------------
     _next: Optional[str]                    # internal routing hint out of aggregate
     final_decision: Optional[str]          # allow | block | cache | harmful | hitl
+    final_verdict: Optional[str]           # SAFE | BLOCK | EDIT — self-reflection | HUMAN-IN-THE-LOOP
     final_answer: str
     final_verdict_badges: List[str]
 
@@ -143,7 +149,8 @@ class Stage:
     ]
 
 
-def new_state(query: str, conversation_id: str = "default") -> ControlPlaneState:
+def new_state(query: str, conversation_id: str = "default",
+              forced_kb: Optional[str] = None) -> ControlPlaneState:
     """Build a fully-initialised state for a fresh query."""
     import time
 
@@ -160,14 +167,18 @@ def new_state(query: str, conversation_id: str = "default") -> ControlPlaneState
         cache_similarity=None,
         cached_answer=None,
         cached_meta=None,
+        forced_kb=forced_kb,
         selected_kb=None,
         router_reason=None,
         router_confidence=None,
+        router_semantic_scores={},
         vector_chunks=[],
         bm25_chunks=[],
         rrf_chunks=[],
         retrieval_meta={},
         answer="",
+        original_answer=None,
+        edit_reason=None,
         model_used=None,
         model_category=None,
         model_tier=None,
@@ -202,7 +213,9 @@ def new_state(query: str, conversation_id: str = "default") -> ControlPlaneState
         hitl_question=None,
         hitl_context=None,
         hitl_response=None,
+        pre_hitl_query=None,
         final_decision=None,
+        final_verdict=None,
         final_answer="",
         final_verdict_badges=[],
         stage=Stage.START,

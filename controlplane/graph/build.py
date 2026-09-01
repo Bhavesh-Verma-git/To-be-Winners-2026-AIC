@@ -12,8 +12,10 @@ LangGraph assembly.
       performance ---> aggregate
       responsibility -> aggregate
       aggregate --(harmful)--> finalize_harmful --> END
-                --(retry)----> retrieval           (retry_count++ , once)
-                --(hitl)-----> hitl_interrupt --> retrieval   (hitl_count++ , once)
+                --(retry)----> retrieval           (retry_count++ , once - same KB, rewritten query)
+                --(hitl)-----> hitl_interrupt --> guardrails   (hitl_count++ , once - the user's info is
+                                                                merged into the query and the WHOLE
+                                                                pipeline re-runs from the start)
                 --(safe)-----> finalize_safe --> END
 """
 
@@ -85,7 +87,11 @@ def _assemble() -> StateGraph:
             "safe": "finalize_safe",
         },
     )
-    g.add_edge("hitl_interrupt", "retrieval")
+    # HITL merges the user's answer into the query and re-enters at guardrails, so
+    # the enriched query runs the IDENTICAL full pipeline as a fresh query
+    # (guardrails -> cache -> routing -> retrieval -> answer -> both branches ->
+    # verdict). A toxic clarification therefore still reaches the content-safety KB.
+    g.add_edge("hitl_interrupt", "guardrails")
     for term in ("finalize_block", "finalize_cache", "finalize_harmful", "finalize_safe"):
         g.add_edge(term, END)
     return g
@@ -118,6 +124,7 @@ def run_query_sync(
     thread_id: Optional[str] = None,
     resume: Optional[str] = None,
     run_id: Optional[str] = None,
+    forced_kb: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run to completion (or to a HITL interrupt) synchronously. If the graph paused
     for human input the returned dict contains an '__interrupt__' entry."""
@@ -128,7 +135,7 @@ def run_query_sync(
         from langgraph.types import Command
 
         return graph.invoke(Command(resume=resume), cfg)
-    state = new_state(query, conversation_id)
+    state = new_state(query, conversation_id, forced_kb=forced_kb)
     state["langsmith_run_id"] = run_id
     return graph.invoke(state, cfg)
 
@@ -139,6 +146,7 @@ async def run_query(
     conversation_id: str = "default",
     thread_id: Optional[str] = None,
     resume: Optional[str] = None,
+    forced_kb: Optional[str] = None,
 ) -> Dict[str, Any]:
     graph = build_graph()
     cfg = _config(thread_id)
@@ -146,4 +154,4 @@ async def run_query(
         from langgraph.types import Command
 
         return await graph.ainvoke(Command(resume=resume), cfg)
-    return await graph.ainvoke(new_state(query, conversation_id), cfg)
+    return await graph.ainvoke(new_state(query, conversation_id, forced_kb=forced_kb), cfg)

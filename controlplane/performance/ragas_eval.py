@@ -58,15 +58,16 @@ def _heuristic(question: str, answer: str, ctx: str) -> Dict[str, Any]:
 def ragas_evaluate(question: str, answer: str, context_chunks: List[str] | str) -> Dict[str, Any]:
     t0 = time.perf_counter()
     ctx = context_chunks if isinstance(context_chunks, str) else "\n\n".join(context_chunks or [])
-    ctx = ctx[:6000]
+    ctx = ctx[:2600]          # keep the judge prompt small so the call stays fast (~2-3s)
 
-    user = f"QUESTION:\n{question}\n\nCONTEXT:\n{ctx or '(no context retrieved)'}\n\nANSWER:\n{answer}"
+    user = (f"QUESTION:\n{question}\n\nCONTEXT:\n{ctx or '(no context retrieved)'}\n\n"
+            f"ANSWER:\n{answer[:1500]}")
     fb = _heuristic(question, answer, ctx)
     try:
         data, meta = complete_json(
             "judge",
             [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": user}],
-            temperature=0.0, max_tokens=400, fallback=fb,
+            temperature=0.0, max_tokens=220, fallback=fb,
         )
         if data.get("_parse_error"):
             data = fb

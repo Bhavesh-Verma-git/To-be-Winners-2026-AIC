@@ -111,7 +111,7 @@ def render_workflow(progress: Dict[str, Any], state: Dict[str, Any]) -> None:
             ("Route", state.get("selected_kb", "—")),
             ("Performance", state.get("perf_verdict", "—")),
             ("Responsibility", state.get("resp_status", "—")),
-            ("Decision", str(state.get("final_decision", "—")).upper()),
+            ("Verdict", str(state.get("final_verdict") or state.get("final_decision", "—")).upper()),
         ]
         cells = "".join(
             f"<div style='flex:1;min-width:130px;background:#0f1626;border:1px solid #1d2842;"
@@ -122,6 +122,15 @@ def render_workflow(progress: Dict[str, Any], state: Dict[str, Any]) -> None:
         )
         st.markdown(f"<div style='display:flex;gap:8px;flex-wrap:wrap;margin:6px 0'>{cells}</div>",
                     unsafe_allow_html=True)
+        st.caption(f"router: **{state.get('router_reason', '—')}** "
+                   f"(conf {state.get('router_confidence', 0)})")
+        sem = state.get("router_semantic_scores") or {}
+        if sem:
+            st.caption("query↔KB similarity: "
+                       + "  ".join(f"`{k}`={v}" for k, v in sorted(sem.items(), key=lambda x: -x[1])))
+        if state.get("retry_count"):
+            st.info(f"↻ **EDIT executed** — the agent rewrote the query to "
+                    f"`{state.get('perf_suggestion', '')}` and re-ran the pipeline once.")
 
         tim = state.get("node_timings", {}) or {}
         if tim:

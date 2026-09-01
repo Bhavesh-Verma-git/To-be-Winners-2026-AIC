@@ -22,6 +22,90 @@ def _style(fig, **kw):
     return fig
 
 
+_ED_WARN, _ED_FAIL = 0.20, 0.40   # DRIFT_SCORE_WARN/FAIL thresholds (entity_drift_agent.py)
+
+
+def _render_entity_drift(state: Dict[str, Any]) -> None:
+    """Full Entity-Drift panel: every computed value + visualisations. All numbers
+    come straight from the running EntityDriftAgent - nothing fabricated."""
+    ed_all = state.get("entity_drift", {}) or {}
+    ed = ed_all.get("entity_drift_results", {}) or {}
+    if not ed:
+        st.caption("Entity drift: no data (cache hit / guardrail block / no answer).")
+        return
+
+    ctx_ents = list(ed.get("context_entities", []) or [])
+    resp_ents = list(ed.get("response_entities", []) or [])
+    halluc = list(ed.get("hallucinated_entities", []) or [])            # added / not in source
+    halluc_raw = list(ed.get("hallucinated_entities_raw", halluc) or [])
+    matched = sorted(set(e.lower() for e in resp_ents) & set(e.lower() for e in ctx_ents))
+    removed = sorted(set(e.lower() for e in ctx_ents) - set(e.lower() for e in resp_ents))
+    drift = float(ed.get("drift_score", 0.0) or 0.0)
+    overlap = float(ed.get("entity_overlap_ratio", 0.0) or 0.0)
+    rel_pairs = ed.get("relation_drift_pairs", []) or []
+    rel_score = float(ed.get("relation_drift_score", 0.0) or 0.0)
+    verdict = ed_all.get("entity_drift_verdict", "—")
+    reasoning = ed_all.get("entity_drift_reasoning", "")
+    lat = ed_all.get("entity_drift_latency_ms", 0.0)
+
+    st.markdown("###### 🔬 Entity drift  ·  spaCy NER (no LLM)")
+    _stat_row([
+        ("Drift score", f"{drift:.2f}"),
+        ("Overlap ratio", f"{overlap:.2f}"),
+        ("Verdict", str(verdict).upper()),
+        ("Warn / Fail @", f"{_ED_WARN:.2f} / {_ED_FAIL:.2f}"),
+        ("Matched / Added / Removed", f"{len(matched)} / {len(halluc)} / {len(removed)}"),
+        ("Relation drift", f"{len(rel_pairs)} pair(s)  ({rel_score:.2f})"),
+        ("Latency", f"{lat:.0f} ms"),
+    ])
+
+    c1, c2 = st.columns(2)
+    with c1:
+        # drift score vs thresholds
+        g = go.Figure(go.Indicator(
+            mode="gauge+number", value=drift,
+            title={"text": f"drift score  (verdict: {verdict})"},
+            gauge={"axis": {"range": [0, 1]}, "bar": {"color": "#7aa2ff"},
+                   "steps": [{"range": [0, _ED_WARN], "color": "#0f2620"},
+                             {"range": [_ED_WARN, _ED_FAIL], "color": "#2a2410"},
+                             {"range": [_ED_FAIL, 1], "color": "#331515"}],
+                   "threshold": {"line": {"color": "#ff8f8f", "width": 3}, "value": _ED_FAIL}}))
+        st.plotly_chart(_style(g, height=240), use_container_width=True)
+    with c2:
+        cdf = pd.DataFrame({
+            "category": ["matched (grounded)", "added (not in source)", "removed (unused source)"],
+            "count": [len(matched), len(halluc), len(removed)],
+        })
+        fig = px.bar(cdf, x="count", y="category", orientation="h", text="count",
+                     color="category",
+                     color_discrete_map={"matched (grounded)": "#57e0c7",
+                                         "added (not in source)": "#ff8f8f",
+                                         "removed (unused source)": "#8fa3c8"})
+        fig.update_traces(textposition="outside", cliponaxis=False)
+        st.plotly_chart(_style(fig, height=240, showlegend=False), use_container_width=True)
+
+    # entity-level comparison table
+    rows = []
+    for e in sorted(set(e.lower() for e in ctx_ents) | set(e.lower() for e in resp_ents)):
+        in_ctx = e in set(x.lower() for x in ctx_ents)
+        in_resp = e in set(x.lower() for x in resp_ents)
+        status = ("✅ matched" if in_ctx and in_resp
+                  else "🟥 added (drift)" if in_resp else "⬜ in source only")
+        rows.append({"entity": e, "in source": in_ctx, "in answer": in_resp, "status": status})
+    if rows:
+        with st.expander(f"entity-level comparison  ({len(rows)} entities)", expanded=bool(halluc)):
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, height=min(320, 40 + 32 * len(rows)))
+    if rel_pairs:
+        st.warning("Relation drift: " + "; ".join(
+            f"{p.get('entities')}: source says '{p.get('context_relation')}' but answer says '{p.get('answer_relation')}'"
+            for p in rel_pairs))
+    if halluc_raw and halluc_raw != halluc:
+        st.caption(f"filtered as trivial (list markers / units / small cardinals): "
+                   f"{sorted(set(e.lower() for e in halluc_raw) - set(e.lower() for e in halluc))}")
+    if reasoning:
+        st.caption(reasoning)
+
+
 def _stat_row(items) -> None:
     """Full-text stat cards (st.metric truncates long values with '...')."""
     cells = "".join(
@@ -42,14 +126,34 @@ def render_dashboard(state: Dict[str, Any], thread_id: str) -> None:
         return
 
     lat = (state.get("total_latency_ms") or 0) / 1000
+    verdict = state.get("final_verdict") or str(state.get("final_decision", "—")).upper()
+    _v = str(verdict).lower()
+    _vcol = ("#ff8f8f" if "block" in _v else "#b9a4ff" if "edit" in _v
+             else "#ffd88a" if ("human" in _v or "hitl" in _v) else "#57e0c7")
+    st.markdown(
+        f"<div style='font-size:20px;font-weight:800;color:{_vcol};margin-bottom:8px'>"
+        f"VERDICT: {html.escape(str(verdict).upper())}</div>", unsafe_allow_html=True)
     _stat_row([
         ("Total latency", f"{lat:.2f} s"),
         ("Decision", str(state.get("final_decision", "—")).upper()),
-        ("Route", state.get("selected_kb", "—")),
+        ("Route", f"{state.get('selected_kb', '—')}  ({state.get('router_reason', '—')})"),
         ("Model", str(state.get("model_used", "—"))),
         ("Cost (USD)", f"${state.get('cost_usd', 0):.5f}  (Groq = $0)"),
         ("Retries / HITL", f"{state.get('retry_count', 0)} / {state.get('hitl_count', 0)}"),
     ])
+    sem = state.get("router_semantic_scores") or {}
+    if sem:
+        st.caption("router semantic scores (query ↔ each KB): "
+                   + "  ".join(f"`{k}` {v}" for k, v in sorted(sem.items(), key=lambda x: -x[1])))
+    if state.get("final_decision") == "harmful" or state.get("resp_status") == "unsafe":
+        st.error("⚠️ **Harmful / toxic** — answer withheld. Laws implicated: "
+                 + ", ".join((state.get("violated_rules") or ["see compliance report"])[:5]))
+    if state.get("original_answer"):
+        with st.expander("↻ Self-reflection (EDIT): original draft → revised answer", expanded=True):
+            st.markdown(f"**Reason for EDIT:** {state.get('edit_reason', '—')}")
+            st.markdown(f"**Rewritten retrieval query:** `{state.get('perf_suggestion', '—')}`")
+            st.markdown(f"**Original draft:**\n\n> {state.get('original_answer', '')[:800]}")
+            st.markdown(f"**Revised answer:**\n\n> {(state.get('answer') or '')[:800]}")
 
     # ---- latency ----
     st.markdown("###### Node latency (ms)")
@@ -114,11 +218,11 @@ def render_dashboard(state: Dict[str, Any], thread_id: str) -> None:
                                  {"range": [20, 60], "color": "#2a2410"},
                                  {"range": [60, 100], "color": "#331515"}]}))
             st.plotly_chart(_style(g), use_container_width=True)
-        ed = (state.get("entity_drift", {}) or {}).get("entity_drift_results", {})
         st.caption(f"**verdict `{state.get('perf_verdict', '—')}`**  ·  votes {state.get('detector_votes', {})}")
-        st.caption(f"entity drift {ed.get('drift_score', 0)} · hallucinated {ed.get('hallucinated_entities', [])[:6]}")
         if state.get("perf_reasoning"):
             st.caption(state["perf_reasoning"])
+        st.divider()
+        _render_entity_drift(state)
 
     with r:
         st.markdown("### 🛡️ Responsibility")
