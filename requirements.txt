@@ -1,0 +1,40 @@
+# ControlPlane.ai  -  Python 3.10
+# ---- orchestration ----
+langgraph>=0.2,<2
+langchain>=0.3
+langchain-core>=0.3
+langchain-community>=0.3
+langchain-text-splitters>=0.3
+# ---- LLM routing (pin: newer litellm needs py>=3.11) ----
+litellm==1.61.20
+# ---- observability ----
+langsmith>=0.1
+# ---- UI ----
+streamlit>=1.30
+plotly>=5.18
+# ---- retrieval ----
+sentence-transformers>=2.5
+faiss-cpu>=1.7
+rank-bm25>=0.2.2
+chromadb>=0.5          # optional at runtime (npz matrix fallback if absent)
+neo4j>=5.14            # optional at runtime (graph_triples.json fallback if absent)
+# ---- performance branch ----
+xgboost>=2.0
+spacy>=3.7
+transformers>=4.40
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.2
+nltk>=3.8
+datasets>=2.18         # imported by the reused feature_engineering module
+# ---- responsibility branch ----
+detoxify>=0.5
+# ---- guardrails (optional; regex fallback if absent) ----
+# presidio-analyzer>=2.2
+# presidio-anonymizer>=2.2
+# ---- misc ----
+python-dotenv>=1.0
+pandas>=2.0
+numpy>=1.24
+pdfplumber>=0.10       # only for optional index rebuilds
+
+https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
