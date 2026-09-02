@@ -2,3 +2,10 @@
 __pycache__/
 *.pyc
 .venv/
+.venv
+venv/
+.claude/
+.pytest_cache/
+claude.md
+readme_pdf.html
+
