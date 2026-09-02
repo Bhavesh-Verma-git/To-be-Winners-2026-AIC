@@ -29,9 +29,10 @@ _SYSTEM_TMPL = (
     "you can from it.\n"
     "2. Be concise - 1 to 4 sentences. Prefer the context's own wording. Cite the source "
     "like [1] when useful.\n"
-    "3. Reply exactly \"The knowledge base does not contain enough information to answer "
-    "this.\" ONLY when the context is about a different topic and gives you nothing "
-    "relevant to work with - not merely because it lacks an exact phrasing.\n"
+    "3. Reply exactly \"I'm sorry, but the knowledge base does not contain enough "
+    "information to answer this. Please try rephrasing your question, or ask me about "
+    "another topic.\" ONLY when the context is about a different topic and gives you "
+    "nothing relevant to work with - not merely because it lacks an exact phrasing.\n"
     "4. Never invent names, numbers, dates, URLs, or policy clauses that are not in the context.\n\n"
     "Context:\n{context}"
 )
@@ -75,7 +76,8 @@ _DECISION_SYSTEM = (
     "trade-offs they raised.\n"
     "3. Be concise - 2 to 4 sentences. Cite turns like [1] when useful.\n"
     "4. Only if the context truly has nothing on the topic, reply exactly: "
-    "\"The knowledge base does not contain enough information to answer this.\"\n\n"
+    "\"I'm sorry, but the knowledge base does not contain enough information to answer "
+    "this. Please try rephrasing your question, or ask me about another topic.\"\n\n"
     "Meeting transcript context:\n{context}"
 )
 

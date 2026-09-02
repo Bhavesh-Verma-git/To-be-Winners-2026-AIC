@@ -341,10 +341,12 @@ class Settings:
 settings = Settings()
 
 # Knowledge base identifiers used across the package (also the router tool names).
+# Order here drives the sidebar Knowledge-base dropdown (after "Auto"); it does not
+# affect routing, which selects by name / score.
 KB_IDS = [
-    "customer_support",
     "hr_policy",
     "internal_knowledge",
+    "customer_support",
     "toxicity_kb",
     "decision_support",
 ]
