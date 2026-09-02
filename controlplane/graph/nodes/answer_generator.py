@@ -53,6 +53,29 @@ _TOXICITY_SYSTEM = (
     "Numbered annotated reference statements:\n{context}"
 )
 
+# decision_support is a corpus of RAW speech-to-text meeting transcripts (the AMI
+# design meetings). The text is full of disfluencies ("uh", "mm-hmm", false
+# starts) and the answer is usually spread across several turns of dialogue rather
+# than stated cleanly once. The generic template makes the model give up too
+# easily here, so this variant tells it to synthesise the decision from the
+# discussion - while still never inventing anything.
+_DECISION_SYSTEM = (
+    "You answer questions about the {kb_label} design meetings. The context below is "
+    "RAW meeting-transcript dialogue - expect disfluencies, false starts and filler; the "
+    "answer is often spread across several speakers' turns.\n"
+    "Rules:\n"
+    "1. Piece together what the team actually discussed or decided from the dialogue. "
+    "Summarise the substance in your own words - you do NOT need a single clean sentence "
+    "in the transcript.\n"
+    "2. Use ONLY what is said in the context. Do NOT invent names, numbers, dates or "
+    "outcomes. If the team weighed options without concluding, say that and give the "
+    "trade-offs they raised.\n"
+    "3. Be concise - 2 to 4 sentences. Cite turns like [1] when useful.\n"
+    "4. Only if the context truly has nothing on the topic, reply exactly: "
+    "\"The knowledge base does not contain enough information to answer this.\"\n\n"
+    "Meeting transcript context:\n{context}"
+)
+
 # educational / defensive content-safety questions ("how to spot / report / counter
 # hate speech, for a training course") - concise, constructive, grounded in the
 # retrieved examples as reference material. Never a long lesson.
@@ -87,6 +110,8 @@ def answer_generator_node(state: Dict[str, Any]) -> Dict[str, Any]:
     context = format_context(chunks) or "(no context retrieved)"
     if kb_id == "toxicity_kb":
         tmpl = _EDU_SAFETY_SYSTEM if defensive_or_educational(query) else _TOXICITY_SYSTEM
+    elif kb_id == "decision_support":
+        tmpl = _DECISION_SYSTEM
     else:
         tmpl = _SYSTEM_TMPL
     messages = [

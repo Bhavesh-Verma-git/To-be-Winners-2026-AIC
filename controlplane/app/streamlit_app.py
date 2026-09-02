@@ -98,6 +98,47 @@ ss.setdefault("queued_prompt", None)
 ss.setdefault("forced_kb", None)          # None -> Auto routing; else a KB id (Mode 2)
 
 
+# ---------------------------------------------------------------- warm start ----
+# Load every embedder / index / classifier ONCE per server process (not per
+# session, not per query). Without this the first visitor after a cold start
+# pays the full ~60-90s model load inside their first query and it looks like a
+# hang. st.cache_resource makes the body run exactly once even with concurrent
+# first visitors. Set CP_SKIP_WARMUP=1 to opt out.
+@st.cache_resource(show_spinner=False)
+def _warm_pipeline() -> bool:
+    import os as _os
+
+    if _os.getenv("CP_SKIP_WARMUP", "").lower() in {"1", "true", "yes"}:
+        return True
+    try:
+        from controlplane.retrievers.registry import get_minilm, warm_all
+
+        get_minilm()
+        warm_all(verbose=False)
+    except Exception:
+        pass
+    for _mod, _fn in (
+        ("controlplane.performance.xgboost_infer", "warmup"),
+        ("controlplane.performance.entity_drift", "warmup"),
+    ):
+        try:
+            getattr(__import__(_mod, fromlist=[_fn]), _fn)()
+        except Exception:
+            pass
+    try:
+        from controlplane.responsibility import get_responsibility_kb, get_toxicity_ensemble
+
+        get_responsibility_kb()
+        get_toxicity_ensemble().score_sync("warm up text")
+    except Exception:
+        pass
+    return True
+
+
+with st.spinner("⚙️  First launch — loading models & indexes (~60–90s, one time)…"):
+    _warm_pipeline()
+
+
 def _sysline() -> str:
     chips = []
     chips.append(f'<span class="cp-chip {"ok" if settings.has_groq() else "off"}">Groq × {len(settings.groq_keys)}</span>')
@@ -246,10 +287,19 @@ with tab_q:
         st.divider()
 
         st.markdown("### 🎛️ Demo prompts")
-        opts = ["—"] + [f"{p['id']} · {p['prompt'][:46]}" for p in DEMO_PROMPTS]
-        sel = st.selectbox("pick one", opts, label_visibility="collapsed")
+        # follow the knowledge-base selector: Auto -> every prompt; a forced KB ->
+        # only the prompts that exercise that KB, so the two controls stay in sync.
+        if ss.forced_kb:
+            _pool = [p for p in DEMO_PROMPTS if p.get("kb") == ss.forced_kb] or list(DEMO_PROMPTS)
+            st.caption(f"showing **{len(_pool)}** prompts for `{ss.forced_kb}`")
+        else:
+            _pool = list(DEMO_PROMPTS)
+            st.caption(f"showing **all {len(_pool)}** prompts (Auto routing)")
+        opts = ["—"] + [f"{p['id']} · {p['prompt'][:46]}" for p in _pool]
+        sel = st.selectbox("pick one", opts, label_visibility="collapsed",
+                           key=f"demo_sel_{ss.forced_kb or 'auto'}")
         if sel != "—":
-            p = DEMO_PROMPTS[opts.index(sel) - 1]
+            p = _pool[opts.index(sel) - 1]
             st.caption(f"**{p['functionality']}**")
             st.info(p["prompt"])
             if st.button("▶  Send this prompt", type="primary", use_container_width=True):

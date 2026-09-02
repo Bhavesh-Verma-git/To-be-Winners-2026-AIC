@@ -27,6 +27,15 @@ _DEBUG = os.getenv("CP_DEBUG", "").lower() in {"1", "true", "yes"}
 # ~2-2.5s, so this keeps the total under the 10s ceiling.
 _RETRY_DEADLINE_S = float(os.getenv("CP_RETRY_DEADLINE_S", "7.0"))
 
+# markers that mean "the first pass produced NO usable answer" - when perf flags
+# one of these the retry runs even if the latency budget is spent: a correct
+# answer a few seconds late always beats a fast "no information" reply.
+_NONANSWER_MARKERS = (
+    "does not contain enough information", "not contain enough information",
+    "not enough information", "no relevant information", "no information",
+    "cannot answer", "unable to answer",
+)
+
 
 @traceable_node("aggregate")
 def aggregate_node(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -40,9 +49,15 @@ def aggregate_node(state: Dict[str, Any]) -> Dict[str, Any]:
     elapsed = time.time() - float(state.get("started_at", time.time()))
     budget_left = elapsed < _RETRY_DEADLINE_S  # room for another retrieval+answer+eval pass?
 
+    # a first pass that returned no usable answer always earns its one retry, even
+    # over budget - otherwise a slow host just shows the "no information" draft.
+    _ans_low = (state.get("answer", "") or "").lower()
+    is_nonanswer = any(m in _ans_low for m in _NONANSWER_MARKERS)
+    retry_ok = budget_left or is_nonanswer
+
     if _DEBUG:
         print(f"[cp:aggregate] perf={perf} resp={resp} retry={retry_count} hitl={hitl_count} "
-              f"elapsed={elapsed:.1f}s budget_left={budget_left}", flush=True)
+              f"elapsed={elapsed:.1f}s budget_left={budget_left} nonanswer={is_nonanswer}", flush=True)
 
     out: Dict[str, Any] = {
         "stage": Stage.AGGREGATE,
@@ -56,7 +71,7 @@ def aggregate_node(state: Dict[str, Any]) -> Dict[str, Any]:
         out["final_verdict"] = "BLOCK"
         return out
 
-    if perf == "hallucinated" and retry_count < settings.max_hallucination_retries and budget_left:
+    if perf == "hallucinated" and retry_count < settings.max_hallucination_retries and retry_ok:
         suggestion = state.get("perf_suggestion") or state.get("updated_query") or state.get("guarded_query")
         out["_next"] = "retry"
         out["retry_count"] = retry_count + 1
